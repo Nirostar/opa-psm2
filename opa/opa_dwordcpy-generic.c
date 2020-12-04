@@ -55,6 +55,7 @@
 
 #include <stdint.h>
 #include <immintrin.h>
+#include <roth_tracing/roth_tracing.h>
 #include "opa_intf.h"
 #include "psm_user.h"
 
@@ -295,7 +296,8 @@ void hfi_pio_blockcpy_64(volatile uint64_t *dest, const uint64_t *src, uint32_t 
 
 void MOCKABLE(psmi_mq_mtucpy)(void *vdest, const void *vsrc, uint32_t nchars)
 {
-
+    roth_tracing_increment_counter(PSMI_MQ_MTUCPY_COUNT);
+    roth_tracing_start_timer(PSMI_MQ_MTUCPY_TIME);
 #ifdef PSM_CUDA
 	if (PSMI_IS_CUDA_ENABLED && (PSMI_IS_CUDA_MEM(vdest) || PSMI_IS_CUDA_MEM((void *) vsrc))) {
 		PSMI_CUDA_CALL(cuMemcpy,
@@ -304,7 +306,8 @@ void MOCKABLE(psmi_mq_mtucpy)(void *vdest, const void *vsrc, uint32_t nchars)
 	}
 #endif
 	memcpy(vdest, vsrc, nchars);
-	return;
+    roth_tracing_stop_timer(PSMI_MQ_MTUCPY_TIME);
+    return;
 
 
 }

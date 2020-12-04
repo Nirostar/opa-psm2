@@ -54,7 +54,9 @@
 /* Copyright (c) 2003-2016 Intel Corporation. All rights reserved. */
 
 #include <sched.h>
+#include <stdio.h>
 
+#include <roth_tracing/roth_tracing.h>
 #include "psm_user.h"
 #include "psm2_hal.h"
 #include "psm_mq_internal.h"
@@ -724,7 +726,10 @@ __psm2_mq_send2(psm2_mq_t mq, psm2_epaddr_t dest, uint32_t flags,
 	psmi_assert(stag != NULL);
 
 	PSMI_LOCK(mq->progress_lock);
+	roth_tracing_increment_counter(Q_SEND_COUNT);
+	roth_tracing_start_timer(Q_SEND_TIME);
 	err = dest->ptlctl->mq_send(mq, dest, flags, stag, buf, len);
+    roth_tracing_stop_timer(Q_SEND_TIME);
 	PSMI_UNLOCK(mq->progress_lock);
 	PSM2_LOG_MSG("leaving");
 	return err;

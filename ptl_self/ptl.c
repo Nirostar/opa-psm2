@@ -57,6 +57,7 @@
  * This file implements the PSM PTL for self (loopback)
  */
 
+#include <roth_tracing/roth_tracing.h>
 #include "psm_user.h"
 #include "psm_mq_internal.h"
 #include "psm_am_internal.h"
@@ -179,6 +180,7 @@ self_mq_send(psm2_mq_t mq, psm2_epaddr_t epaddr, uint32_t flags,
 {
 	psm2_error_t err;
 	psm2_mq_req_t req;
+	roth_tracing_increment_counter(SELF_MQ_SEND_COUNT);
 	err = self_mq_isend(mq, epaddr, flags, PSMI_REQ_FLAG_NORMAL, tag, ubuf, len, NULL, &req);
 	psmi_mq_wait_internal(&req);
 	return err;

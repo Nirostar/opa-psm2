@@ -63,6 +63,7 @@
 #include "psm_mq_internal.h"
 #include "ips_expected_proto.h"
 #include "ips_proto_help.h"
+#include <roth_tracing/roth_tracing.h>
 
 PSMI_NEVER_INLINE(ips_scb_t *
 		  ips_poll_scb(struct ips_proto *proto,
@@ -869,6 +870,8 @@ ips_proto_mq_send(psm2_mq_t mq, psm2_epaddr_t mepaddr, uint32_t flags,
 	ips_scb_t *scb;
 	int gpu_mem = 0;
 
+    roth_tracing_increment_counter(IPS_PROTO_MQ_SEND_COUNT);
+    roth_tracing_start_timer(IPS_PROTO_MQ_SEND_TIME);
 	_HFI_VDBG("ubuf=%p len=%u\n", ubuf, len);
 
 	ipsaddr = ((ips_epaddr_t *) mepaddr)->msgctl->ipsaddr_next;
@@ -1075,6 +1078,8 @@ do_rendezvous:
 	mq->stats.tx_num++;
 	mq->stats.tx_eager_num++;
 	mq->stats.tx_eager_bytes += len;
+
+    roth_tracing_stop_timer(IPS_PROTO_MQ_SEND_TIME);
 
 	return err;
 }

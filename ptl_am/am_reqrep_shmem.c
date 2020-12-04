@@ -58,6 +58,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <roth_tracing/roth_tracing.h>
 
 #include "psm_user.h"
 #include "psm_mq_internal.h"
@@ -1368,7 +1369,7 @@ amsh_ep_disconnect(ptl_t *ptl, int force, int numep,
 #undef CSWAP
 PSMI_ALWAYS_INLINE(
 int32_t
-cswap(volatile int32_t *p, int32_t old_value, int32_t new_value))
+cswap(volatile unsigned int *p, int32_t old_value, int32_t new_value))
 {
 	asm volatile ("lock cmpxchg %2, %0" :
 		      "+m" (*p), "+a"(old_value) : "r"(new_value) : "memory");
@@ -1379,24 +1380,44 @@ PSMI_ALWAYS_INLINE(
 am_pkt_short_t *
 am_ctl_getslot_pkt_inner(volatile am_ctl_qhdr_t *shq, am_pkt_short_t *pkt0))
 {
+    roth_tracing_increment_counter(AM_CTL_GETSLOT_PKT_INNER_COUNT);
+    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_TIME);
 	am_pkt_short_t *pkt;
 	uint32_t idx;
 #ifndef CSWAP
+    roth_tracing_start_timer(PTHREAD_SPIN_LOCK_TIME);
 	pthread_spin_lock(&shq->lock);
+    roth_tracing_stop_timer(PTHREAD_SPIN_LOCK_TIME);
 	idx = shq->tail;
 	pkt = (am_pkt_short_t *) ((uintptr_t) pkt0 + idx * shq->elem_sz);
-	if (pkt->flag == QFREE) {
+    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_CHECK_QFREE_TIME);
+    uint_fast32_t is_qfree = pkt->flag == QFREE;
+    roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_CHECK_QFREE_TIME);
+    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_IF_BLOCK_TIME);
+    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_IF_STATEMENT_TIME);
+    if (likely(is_qfree)) {
+        roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_IF_STATEMENT_TIME);
+        roth_tracing_start_timer(IPS_SYNC_READS_TIME);
 		ips_sync_reads();
-		pkt->flag = QUSED;
+        roth_tracing_stop_timer(IPS_SYNC_READS_TIME);
+        roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_SET_QUEUE_USED_TIME);
+        pkt->flag = QUSED;
+        roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_SET_QUEUE_USED_TIME);
+        roth_tracing_start_timer(INCREMENT_SHQ_TAIL_TIME);
 		shq->tail += 1;
+        roth_tracing_stop_timer(INCREMENT_SHQ_TAIL_TIME);
 		if (shq->tail == shq->elem_cnt)
 			shq->tail = 0;
 	} else {
 		pkt = 0;
 	}
+    roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_IF_BLOCK_TIME);
+    roth_tracing_start_timer(PTHREAD_SPIN_UNLOCK_TIME);
 	pthread_spin_unlock(&shq->lock);
+    roth_tracing_stop_timer(PTHREAD_SPIN_UNLOCK_TIME);
 #else
-	uint32_t idx_next;
+    roth_tracing_increment_counter(CSWAP_COUNT);
+    uint32_t idx_next;
 	do {
 		idx = shq->tail;
 		idx_next = (idx + 1 == shq->elem_cnt) ? 0 : idx + 1;
@@ -1405,6 +1426,7 @@ am_ctl_getslot_pkt_inner(volatile am_ctl_qhdr_t *shq, am_pkt_short_t *pkt0))
 	pkt = (am_pkt_short_t *) ((uintptr_t) pkt0 + idx * shq->elem_sz);
 	while (cswap(&pkt->flag, QFREE, QUSED) != QFREE);
 #endif
+    roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_TIME);
 	return pkt;
 }
 
@@ -1484,10 +1506,13 @@ amsh_poll_internal_inner(ptl_t *ptl_gen, int replyonly,
 {
 	struct ptl_am *ptl = (struct ptl_am *)ptl_gen;
 	psm2_error_t err = PSM2_OK_NO_PROGRESS;
+    roth_tracing_increment_counter(AMSH_POLL_INTERNAL_INNER_COUNT);
+    roth_tracing_start_timer(AMSH_POLL_INTERNAL_INNER_TIME);
 	/* poll replies */
 	if (!QISEMPTY(ptl->repH.head->flag)) {
+        roth_tracing_increment_counter(AMSH_POLL_INTERNAL_INNER_NOT_QISEMPTY_COUNT);
 		do {
-			ips_sync_reads();
+            ips_sync_reads();
 			process_packet(ptl_gen, (am_pkt_short_t *) ptl->repH.head,
 				       0);
 			advance_head(&ptl->repH);
@@ -1498,7 +1523,8 @@ amsh_poll_internal_inner(ptl_t *ptl_gen, int replyonly,
 	if (!replyonly) {
 		/* Request queue not enable for 2.0, will be re-enabled to support long
 		 * replies */
-		if (!is_internal && ptl->psmi_am_reqq_fifo.first != NULL) {
+        roth_tracing_increment_counter(AMSH_POLL_INTERNAL_INNER_NOT_REPLYONLY_COUNT);
+        if (!is_internal && ptl->psmi_am_reqq_fifo.first != NULL) {
 			psmi_am_reqq_drain(ptl_gen);
 			err = PSM2_OK;
 		}
@@ -1515,20 +1541,24 @@ amsh_poll_internal_inner(ptl_t *ptl_gen, int replyonly,
 	}
 
 	if (is_internal) {
+        roth_tracing_increment_counter(AMSH_POLL_INTERNAL_INNER_IS_INTERNAL_COUNT);
 		if (err == PSM2_OK)	/* some progress, no yields */
 			ptl->zero_polls = 0;
 		else if (++ptl->zero_polls == AMSH_ZERO_POLLS_BEFORE_YIELD) {
 			/* no progress for AMSH_ZERO_POLLS_BEFORE_YIELD */
+			roth_tracing_increment_counter(AMSH_ZERO_POLLS_BEFORE_YIELD_REACHED_COUNT);
 			sched_yield();
 			ptl->zero_polls = 0;
 		}
 
 		if (++ptl->amsh_only_polls == AMSH_POLLS_BEFORE_PSM_POLL) {
-			psmi_poll_internal(ptl->ep, 0);
+            roth_tracing_increment_counter(AMSH_POLLS_BEFORE_PSM_POLL_REACHED_COUNT);
+            psmi_poll_internal(ptl->ep, 0);
 			ptl->amsh_only_polls = 0;
 		}
 	}
-	return err;		/* if we actually did something */
+    roth_tracing_stop_timer(AMSH_POLL_INTERNAL_INNER_TIME);
+    return err;		/* if we actually did something */
 }
 
 /* non-inlined version */
@@ -1575,6 +1605,9 @@ am_send_pkt_short(ptl_t *ptl, uint32_t destidx, uint32_t returnidx,
 	volatile am_pkt_short_t *pkt;
 	int copy_nargs;
 
+	roth_tracing_increment_counter(AM_SEND_PKT_SHORT_COUNT);
+	roth_tracing_start_timer(AM_SEND_PKT_SHORT_TIME);
+
 	AMSH_POLL_UNTIL(ptl, isreply,
 			(pkt =
 			 am_ctl_getslot_pkt(ptl, destidx, isreply)) != NULL);
@@ -1605,6 +1638,8 @@ am_send_pkt_short(ptl_t *ptl, uint32_t destidx, uint32_t returnidx,
 		  pkt->flag, pkt->nargs, src, (int)len, (int)handleridx,
 		  src != NULL ? *((uint32_t *) src) : 0);
 	QMARKREADY(pkt);
+    roth_tracing_stop_timer(AM_SEND_PKT_SHORT_TIME);
+
 }
 
 #define amsh_shm_copy_short psmi_mq_mtucpy
@@ -1626,6 +1661,10 @@ psmi_amsh_generic_inner(uint32_t amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 	int returnidx = ((am_epaddr_t *) epaddr)->return_shmidx;
 	int is_reply = AM_IS_REPLY(amtype);
 	volatile am_pkt_bulk_t *bulkpkt;
+    roth_tracing_start_timer(PSMI_AMSH_GENERIC_INNER_TIME);
+    if (!is_reply) {
+        roth_tracing_start_timer(PSMI_AMSH_GENERIC_INNER_NOT_IS_REPLY_TIME);
+    }
 
 	_HFI_VDBG("%s epaddr=%s, shmidx=%d, type=%d\n",
 		  is_reply ? "reply" : "request",
@@ -1636,7 +1675,8 @@ psmi_amsh_generic_inner(uint32_t amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 	switch (amtype) {
 	case AMREQUEST_SHORT:
 	case AMREPLY_SHORT:
-		if (len + (nargs << 3) <= (NSHORT_ARGS << 3)) {
+        roth_tracing_start_timer(PSMI_AMSH_GENERIC_INNER_SHORT_WO_SEND_TIME);
+        if (len + (nargs << 3) <= (NSHORT_ARGS << 3)) {
 			/* Payload fits in args packet */
 			type = AMFMT_SHORT_INLINE;
 			bulkidx = len;
@@ -1647,11 +1687,10 @@ psmi_amsh_generic_inner(uint32_t amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 			psmi_assert(src != NULL || nargs > NSHORT_ARGS);
 			type = AMFMT_SHORT;
 
+            roth_tracing_start_timer(AMSH_POLL_UNTIL_TIME);
 			AMSH_POLL_UNTIL(ptl_gen, is_reply,
-					(bulkpkt =
-					 am_ctl_getslot_long(ptl_gen, destidx,
-							     is_reply)) !=
-					NULL);
+					(bulkpkt = am_ctl_getslot_long(ptl_gen, destidx, is_reply)) != NULL);
+            roth_tracing_stop_timer(AMSH_POLL_UNTIL_TIME);
 
 			bulkidx = bulkpkt->idx;
 			bulkpkt->len = len;
@@ -1662,12 +1701,17 @@ psmi_amsh_generic_inner(uint32_t amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 				bulkpkt->args[i] = args[i + NSHORT_ARGS];
 			}
 
-			amsh_shm_copy_short((void *)bulkpkt->payload, src,
+            roth_tracing_start_timer(AMSH_SHM_COPY_SHORT_TIME);
+            amsh_shm_copy_short((void *)bulkpkt->payload, src,
 					    (uint32_t) len);
-			QMARKREADY(bulkpkt);
+            roth_tracing_stop_timer(AMSH_SHM_COPY_SHORT_TIME);
+            QMARKREADY(bulkpkt);
 		}
-		am_send_pkt_short(ptl_gen, destidx, returnidx, bulkidx, type,
+        roth_tracing_stop_timer(PSMI_AMSH_GENERIC_INNER_SHORT_WO_SEND_TIME);
+        roth_tracing_start_timer(PSMI_AMSH_GENERIC_INNER_SHORT_SEND_TIME);
+        am_send_pkt_short(ptl_gen, destidx, returnidx, bulkidx, type,
 				  nargs, hidx, args, src, len, is_reply);
+        roth_tracing_stop_timer(PSMI_AMSH_GENERIC_INNER_SHORT_SEND_TIME);
 		break;
 
 	case AMREQUEST_LONG:
@@ -1715,7 +1759,12 @@ psmi_amsh_generic_inner(uint32_t amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 	default:
 		break;
 	}
-	return 1;
+    if (!is_reply) {
+        roth_tracing_stop_timer(PSMI_AMSH_GENERIC_INNER_NOT_IS_REPLY_TIME);
+    }
+    roth_tracing_stop_timer(PSMI_AMSH_GENERIC_INNER_TIME);
+
+    return 1;
 }
 
 /* A generic version that's not inlined */
@@ -1733,7 +1782,9 @@ psmi_amsh_short_request(ptl_t *ptl, psm2_epaddr_t epaddr,
 			psm2_handler_t handler, psm2_amarg_t *args, int nargs,
 			const void *src, size_t len, int flags)
 {
-	return psmi_amsh_generic_inner(AMREQUEST_SHORT, ptl, epaddr, handler,
+    roth_tracing_increment_counter(PSMI_AMSH_SHORT_REQUEST_COUNT);
+
+    return psmi_amsh_generic_inner(AMREQUEST_SHORT, ptl, epaddr, handler,
 				       args, nargs, src, len, NULL, flags);
 }
 
@@ -1812,7 +1863,10 @@ psmi_am_reqq_add(int amtype, ptl_t *ptl_gen, psm2_epaddr_t epaddr,
 	struct ptl_am *ptl = (struct ptl_am *)ptl_gen;
 	int i;
 	int flags = 0;
-	am_reqq_t *nreq =
+
+    roth_tracing_increment_counter(PSMI_AM_REQQ_ADD_COUNT);
+
+    am_reqq_t *nreq =
 	    (am_reqq_t *) psmi_malloc(ptl->ep, UNDEFINED, sizeof(am_reqq_t));
 	psmi_assert_always(nreq != NULL);
 	_HFI_VDBG("alloc of reqq=%p, to epaddr=%s, ptr=%p, len=%d, "
@@ -1965,6 +2019,8 @@ amsh_mq_rndv(ptl_t *ptl, psm2_mq_t mq, psm2_mq_req_t req,
 	psm2_amarg_t args[5];
 	psm2_error_t err = PSM2_OK;
 
+    roth_tracing_increment_counter(AMSH_MQ_RNDV_COUNT);
+
 	args[0].u32w0 = MQ_MSG_LONGRTS;
 	args[0].u32w1 = len;
 	args[1].u32w1 = tag->tag[0];
@@ -2034,6 +2090,8 @@ amsh_mq_send_inner_eager(psm2_mq_t mq, psm2_mq_req_t req, psm2_epaddr_t epaddr,
 	uint32_t bytes_left = len;
 	uint32_t bytes_this = 0;
 
+	roth_tracing_increment_counter(AMSH_MQ_SEND_INNER_EAGER_COUNT);
+	roth_tracing_start_timer(AMSH_MQ_SEND_INNER_EAGER_TIME);
 	psm2_handler_t handler = mq_handler_hidx;
 
 	args[1].u32w1 = tag->tag[0];
@@ -2081,6 +2139,7 @@ amsh_mq_send_inner_eager(psm2_mq_t mq, psm2_mq_req_t req, psm2_epaddr_t epaddr,
 	mq->stats.tx_eager_num++;
 	mq->stats.tx_eager_bytes += len;
 
+    roth_tracing_stop_timer(AMSH_MQ_SEND_INNER_EAGER_TIME);
 	return PSM2_OK;
 }
 
@@ -2211,8 +2270,10 @@ amsh_mq_send(psm2_mq_t mq, psm2_epaddr_t epaddr, uint32_t flags,
 		  psmi_epaddr_get_name(epaddr->ptlctl->ep->epid),
 		  psmi_epaddr_get_name(epaddr->epid), ubuf, len,
 		  tag->tag[0], tag->tag[1], tag->tag[2]);
-
-	amsh_mq_send_inner(mq, NULL, epaddr, flags, PSMI_REQ_FLAG_NORMAL, tag, ubuf, len);
+    roth_tracing_increment_counter(AMSH_MQ_SEND_COUNT);
+    roth_tracing_start_timer(AMSH_MQ_SEND_TIME);
+    amsh_mq_send_inner(mq, NULL, epaddr, flags, PSMI_REQ_FLAG_NORMAL, tag, ubuf, len);
+    roth_tracing_stop_timer(AMSH_MQ_SEND_TIME);
 
 	return PSM2_OK;
 }
