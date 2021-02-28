@@ -1380,43 +1380,29 @@ PSMI_ALWAYS_INLINE(
 am_pkt_short_t *
 am_ctl_getslot_pkt_inner(volatile am_ctl_qhdr_t *shq, am_pkt_short_t *pkt0))
 {
-    roth_tracing_increment_counter(AM_CTL_GETSLOT_PKT_INNER_COUNT);
     roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_TIME);
 	am_pkt_short_t *pkt;
 	uint32_t idx;
 #ifndef CSWAP
-    roth_tracing_start_timer(PTHREAD_SPIN_LOCK_TIME);
 	pthread_spin_lock(&shq->lock);
-    roth_tracing_stop_timer(PTHREAD_SPIN_LOCK_TIME);
 	idx = shq->tail;
 	pkt = (am_pkt_short_t *) ((uintptr_t) pkt0 + idx * shq->elem_sz);
     roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_CHECK_QFREE_TIME);
     uint_fast32_t is_qfree = pkt->flag == QFREE;
     roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_CHECK_QFREE_TIME);
-    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_IF_BLOCK_TIME);
-    roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_IF_STATEMENT_TIME);
     if (likely(is_qfree)) {
-        roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_IF_STATEMENT_TIME);
-        roth_tracing_start_timer(IPS_SYNC_READS_TIME);
 		ips_sync_reads();
-        roth_tracing_stop_timer(IPS_SYNC_READS_TIME);
         roth_tracing_start_timer(AM_CTL_GETSLOT_PKT_INNER_SET_QUEUE_USED_TIME);
         pkt->flag = QUSED;
         roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_SET_QUEUE_USED_TIME);
-        roth_tracing_start_timer(INCREMENT_SHQ_TAIL_TIME);
 		shq->tail += 1;
-        roth_tracing_stop_timer(INCREMENT_SHQ_TAIL_TIME);
 		if (shq->tail == shq->elem_cnt)
 			shq->tail = 0;
 	} else {
 		pkt = 0;
 	}
-    roth_tracing_stop_timer(AM_CTL_GETSLOT_PKT_INNER_IF_BLOCK_TIME);
-    roth_tracing_start_timer(PTHREAD_SPIN_UNLOCK_TIME);
 	pthread_spin_unlock(&shq->lock);
-    roth_tracing_stop_timer(PTHREAD_SPIN_UNLOCK_TIME);
 #else
-    roth_tracing_increment_counter(CSWAP_COUNT);
     uint32_t idx_next;
 	do {
 		idx = shq->tail;

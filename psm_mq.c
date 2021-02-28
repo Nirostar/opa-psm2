@@ -1121,7 +1121,8 @@ psmi_mq_ipeek_inner(psm2_mq_t mq, psm2_mq_req_t *oreq,
 	psm2_mq_req_t req;
 
 	PSMI_ASSERT_INITIALIZED();
-
+    roth_tracing_increment_counter(PSMI_MQ_IPEEK_INNER_COUNT);
+    roth_tracing_start_timer(PSMI_MQ_IPEEK_INNER_TIME);
 	if ((req = mq->completed_q.first) == NULL) {
 		PSMI_LOCK(mq->progress_lock);
 		psmi_poll_internal(mq->ep, 1);
@@ -1135,6 +1136,7 @@ psmi_mq_ipeek_inner(psm2_mq_t mq, psm2_mq_req_t *oreq,
 	*oreq = req;
 	if (status != NULL)
 		status_copy(req, status);
+    roth_tracing_stop_timer(PSMI_MQ_IPEEK_INNER_TIME);
 
 	return PSM2_OK;
 }
@@ -1150,7 +1152,9 @@ __psm2_mq_ipeek2(psm2_mq_t mq, psm2_mq_req_t *oreq, psm2_mq_status2_t *status)
 	rv = psmi_mq_ipeek_inner(mq, oreq, status,
 				   (psmi_mq_status_copy_t) mq_status2_copy);
 
+	roth_tracing_start_timer(PSMI_ASSERT_REQ_NOT_INTERNAL_TIME);
 	psmi_assert_req_not_internal(*oreq);
+    roth_tracing_stop_timer(PSMI_ASSERT_REQ_NOT_INTERNAL_TIME);
 	PSM2_LOG_MSG("leaving");
 	return rv;
 }
